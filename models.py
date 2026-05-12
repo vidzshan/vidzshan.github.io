@@ -17,6 +17,7 @@ class Product(Base):
     image_folder = Column(String(200), default="")
     cainz_url = Column(String(300), default="")
     category = Column(String(100), default="Uncategorized")
+    weight_kg = Column(Float, default=0.0)
     
     mercari_price = Column(Integer, default=0)
     expected_profit = Column(Integer, default=0)

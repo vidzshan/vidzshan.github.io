@@ -16,8 +16,8 @@ if sys.platform == 'win32':
 # Setup your free Discord/Slack Webhook here for mobile alerts
 WEBHOOK_URL = "YOUR_DISCORD_WEBHOOK_URL_HERE"
 
-# Banned keywords to protect Mercari Account
-PROHIBITED_KEYWORDS = ['肥料', '農薬', '殺虫', '除草剤', '配合', '化成']
+# 🚨 PATCHED: Expanded TOS Blacklist
+PROHIBITED_KEYWORDS = ['肥料', '農薬', '殺虫', '除草剤', '配合', '化成', '医薬品', 'ナイフ', '商品券', 'チケット', 'メーカー直送', '訳あり', 'ジャンク']
 
 def ensure_dir(path):
     if not os.path.exists(path):
@@ -68,8 +68,9 @@ def scrape_cainz_product(jan_code):
             browser.close()
             raise ValueError("⚠️ TOS VIOLATION: Item contains prohibited keywords. Skipped automatically.")
         
-        # Extract Title
-        title = h1_tag.text.strip() if h1_tag else f"Product {jan_code}"
+        # 🚨 PATCHED: Instantly scrub brand exposure from the raw title
+        raw_title = h1_tag.text.strip() if h1_tag else f"Product {jan_code}"
+        title = re.sub(r'カインズ|CAINZ|Kumimoku|kumimoku', '', raw_title).strip()
         
         # Extract Price (Primary: JSON-LD)
         price = 0
@@ -117,19 +118,29 @@ def scrape_cainz_product(jan_code):
         except Exception as e:
             print(f"Category extraction failed: {e}")
 
-        # Extract dimensions (L+W+H) and catch mm vs cm
+        # 🚨 UPGRADED: Smart Logistics Extraction (Size & Weight)
         dimensions_cm = 120 
+        weight_kg = 0.0
+        
         try:
-            dim_match = re.search(r'幅(\d+(?:\.\d+)?).*?奥行(\d+(?:\.\d+)?).*?高さ(\d+(?:\.\d+)?)\s*(cm|mm)?', content, re.IGNORECASE)
-            if dim_match:
-                l, w, h = map(float, dim_match.group(1, 2, 3))
-                unit = dim_match.group(4)
-                
+            storage_match = re.search(r'収納.*?(\d+(?:\.\d+)?)\s*[×x*]\s*.*?(\d+(?:\.\d+)?)\s*[×x*]\s*.*?(\d+(?:\.\d+)?)\s*(cm|mm)?', content)
+            # Catch raw dimensions without labels: "63.5×35.9×38.3" or "直径17×深さ9"
+            general_match = re.search(r'(\d+(?:\.\d+)?)\s*[×x*]\s*(?:奥行|D|深さ|縦)?\s*(\d+(?:\.\d+)?)\s*[×x*]\s*(?:高さ|H|厚さ)?\s*(\d+(?:\.\d+)?)\s*(cm|mm)?', content, re.IGNORECASE)
+            
+            best_match = storage_match if storage_match else general_match
+            if best_match:
+                l, w, h = map(float, best_match.group(1, 2, 3))
+                unit = best_match.group(4)
                 if unit and unit.lower() == 'mm':
                     l, w, h = l/10, w/10, h/10
-                    
-                dimensions_cm = int(l + w + h)
-        except: pass
+                dimensions_cm = int(math.ceil(l + w + h))
+                
+            weight_match = re.search(r'重量.*?(\d+(?:\.\d+)?)\s*k?g', content)
+            if weight_match:
+                w_val = float(weight_match.group(1))
+                weight_kg = w_val / 1000 if w_val > 100 else w_val
+        except Exception as e: 
+            print(f"Logistics extraction error: {e}")
 
         # Product Data Extraction (Features & Specs)
         features_text = ""
@@ -148,8 +159,9 @@ def scrape_cainz_product(jan_code):
                     elif key_str not in ["商品コード", "JANコード"]: 
                         specs_text += f"■ {key_str}：{val_str}\n"
 
+        # 🚨 PATCHED: High-Conversion Default Hook
         if not features_text:
-            features_text = "✅ 使いやすさを追求した、日々の暮らしに役立つアイテムです。\n"
+            features_text = "✅ 【限定特売】\n大人気商品のため、在庫がなくなり次第終了となります！日々の作業を快適にする必須アイテムです。\n"
             
         specs_text += f"■ JANコード：{jan_code}\n■ 推定配送サイズ：{dimensions_cm}cm以内\n"
 
@@ -172,23 +184,16 @@ def scrape_cainz_product(jan_code):
                 with open(file_path, 'wb') as f:
                     f.write(requests.get(src).content)
                 
-                # 🚨 NEW: IMAGE CLOAKING ENGINE (DEFEATS MERCARI AI)
-                # We modify the FIRST image (Thumbnail) to break the stock-photo hash
-                if saved_imgs == 0:
-                    from PIL import Image, ImageOps
-                    try:
-                        with Image.open(file_path) as img:
-                            # 1. Convert to standard RGB to prevent color space crashes
-                            img = img.convert("RGB")
-                            
-                            # 2. Add a thick, 15-pixel custom border (Jayani NEXUS branded color: Dark Green/Gold)
-                            # This completely changes the cryptographic hash of the image!
-                            cloaked_img = ImageOps.expand(img, border=15, fill='#2E8B57')
-                            
-                            # 3. Save it back, overwriting the original stock photo
-                            cloaked_img.save(file_path, quality=95)
-                    except Exception as img_e:
-                        print(f"Image cloaking failed, bypassing: {img_e}")
+                # 🚨 PATCHED: IMAGE CLOAKING ENGINE (APPLIED TO ALL IMAGES)
+                from PIL import Image, ImageOps
+                try:
+                    with Image.open(file_path) as img:
+                        img = img.convert("RGB")
+                        # Wrap EVERY image in the border to completely destroy the reverse-image search hash array
+                        cloaked_img = ImageOps.expand(img, border=15, fill='#2E8B57')
+                        cloaked_img.save(file_path, quality=95)
+                except Exception as img_e:
+                    print(f"Image cloaking failed: {img_e}")
 
                 saved_imgs += 1
             except: pass
@@ -238,7 +243,8 @@ def scrape_cainz_product(jan_code):
         "specs": specs_text.strip(),
         "stock_quantity": stock_quantity, 
         "image_folder": img_dir,
-        "dimensions_cm": dimensions_cm
+        "dimensions_cm": dimensions_cm,
+        "weight_kg": weight_kg
     }
 
 def update_inventory_for_all():
@@ -256,8 +262,22 @@ def update_inventory_for_all():
             
             new_log = InventoryLog(jan_code=prod.jan_code, stock_quantity=new_stock)
             db.add(new_log)
+            
+            # Auto-Pause if stock hits 0 during background check
+            if new_stock == 0 and prod.mercari_status == "Active":
+                prod.mercari_status = "Paused"
+                db.merge(prod)
+                
         except Exception as e:
-            print(f"Error updating {prod.jan_code}: {e}")
+            err_msg = str(e)
+            print(f"Error updating {prod.jan_code}: {err_msg}")
+            # 🚨 NEW: Phantom Inventory Auto-Pause (Catches 404s and Deleted Items)
+            if "404" in err_msg or "discontinued" in err_msg.lower():
+                if prod.mercari_status == "Active":
+                    prod.mercari_status = "Paused"
+                    db.merge(prod)
+                    alert_msg = f"🚨 **FATAL 404 ALERT**: `{prod.title}` (JAN: {prod.jan_code})\nItem removed from Cainz. Status auto-changed to PAUSED to protect your account."
+                    send_stock_alert(alert_msg)
             
     db.commit()
     db.close()

@@ -109,14 +109,33 @@ with tab_dash:
                         
                         # 2. Process each item
                         for p in export_items:
-                            # Write CSV row
-                            csv_data.append({
-                                "商品名 (Title)": p.title[:40],
-                                "商品説明 (Description)": p.mercari_text.replace("\n", "\r\n"),
-                                "価格 (Price)": p.mercari_price,
-                                "在庫数 (Stock)": 1,
-                                "JANコード (JAN)": p.jan_code
-                            })
+                            # 🚨 NEW: Strict Mercari Shops CSV Schema Mapping
+                            row = {
+                                "商品名": p.title[:40],
+                                "商品説明": p.mercari_text.replace("\n", "\r\n"),
+                                "在庫数": 1,
+                                "販売価格": p.mercari_price,
+                                "商品の状態": "新品、未使用",
+                                "配送料の負担": "送料込み(出品者負担)",
+                                "配送の方法": "らくらくメルカリ便",
+                                "発送元の地域": "栃木県", # Sano location
+                                "発送までの日数": "1~2日で発送",
+                                "種類": "その他", # Default fallback category
+                                "JANコード": p.jan_code
+                            }
+                            
+                            # Map up to 6 images to the strict CSV columns
+                            if p.image_folder and os.path.exists(p.image_folder):
+                                img_files = [f for f in os.listdir(p.image_folder) if f.endswith('.jpg')]
+                                for i in range(10): # Mercari allows up to 10 images
+                                    col_name = f"画像{i+1}"
+                                    if i < len(img_files):
+                                        # Write exact filename so Mercari ZIP upload links them
+                                        row[col_name] = f"{p.jan_code}_{i}.jpg" 
+                                    else:
+                                        row[col_name] = ""
+                            
+                            csv_data.append(row)
                             
                             # 3. Inject Images into the ZIP directory
                             if p.image_folder and os.path.exists(p.image_folder):
@@ -251,6 +270,9 @@ with tab_dash:
                         f"¥{prod.shipping_fee:,.0f}",
                     )
                     st.metric("Mercari Sale Price", f"¥{prod.mercari_price:,.0f}")
+                    import math
+                    mercari_fee = math.floor(prod.mercari_price * 0.1)
+                    st.metric("Mercari Fee (10%)", f"-¥{mercari_fee:,.0f}")
                     st.metric("Net Profit", f"¥{prod.expected_profit:,.0f}")
 
                     st.markdown("**🛒 Operations**")
@@ -363,6 +385,43 @@ with tab_dash:
                         st.rerun()
 
                     # ==========================================
+                    # 🚨 NEW: PHASE 4 - MARKET MATCHER (NEGOTIATOR)
+                    # ==========================================
+                    st.markdown("---")
+                    st.markdown("**🤝 Market Matcher (Discount Simulator)**")
+                    col_sim1, col_sim2 = st.columns([1, 1.5])
+                    
+                    with col_sim1:
+                        target_price = st.number_input("Target/Requested Price (¥)", 
+                                                       min_value=0, 
+                                                       value=prod.mercari_price, 
+                                                       step=100, 
+                                                       key=f"target_{prod.jan_code}")
+                    
+                    if target_price != prod.mercari_price:
+                        from template_engine import simulate_discount
+                        sim = simulate_discount(target_price, prod.price, prod.shipping_fee, 100) # Assumes base packaging=100
+                        
+                        with col_sim2:
+                            if sim["status"] == "ACCEPT":
+                                st.success(f"🟢 **Safe!** Profit: ¥{sim['simulated_profit']:,}")
+                            elif sim["status"] == "COUNTER_OFFER":
+                                st.warning(f"🟡 **Low Profit!** Profit: ¥{sim['simulated_profit']:,} (Below ¥400 Floor)")
+                            else:
+                                st.error(f"🔴 **LOSS ALERT!** Profit: ¥{sim['simulated_profit']:,}")
+                        
+                        st.code(sim["message"], language="markdown")
+                        
+                        # 1-Click Update Button if you accept the price
+                        if sim["status"] == "ACCEPT" and st.button("✅ Apply New Price to Database", key=f"apply_{prod.jan_code}"):
+                            prod.mercari_price = target_price
+                            prod.expected_profit = sim["simulated_profit"]
+                            prod.updated_at = datetime.utcnow() # Resets the 100-yen drop timer!
+                            db.commit()
+                            st.toast(f"Price updated to ¥{target_price:,}!", icon="🎉")
+                            st.rerun()
+
+                    # ==========================================
                     # 🚨 NEW: DELETE ITEM BUTTON
                     # ==========================================
                     st.markdown("---")
@@ -444,7 +503,7 @@ with tab_bulk:
         def fetch_cainz_data(jan_code):
             try:
                 info = scrape_cainz_product(jan_code)
-                price_calc = calculate_price(info['price'], dimensions_cm=info['dimensions_cm'])
+                price_calc = calculate_price(info['price'], dimensions_cm=info['dimensions_cm'], weight_kg=info.get('weight_kg', 0.0))
                 return {"jan": jan_code, "info": info, "calc": price_calc, "error": None}
             except Exception as e:
                 return {"jan": jan_code, "info": None, "calc": None, "error": str(e)}
@@ -475,16 +534,23 @@ with tab_bulk:
                     if info['price'] < 1800:
                         track = TrackedJan(jan_code=jan, status="Skipped: Price too low", notes=f"Price: ¥{info['price']}", last_checked=datetime.now())
                         db.merge(track)
-                    elif price_calc['actual_profit'] < 300:
+                    # 🚨 PATCHED: Enforced the ¥400 minimum profit floor
+                    elif price_calc['actual_profit'] < 400:
                         track = TrackedJan(jan_code=jan, status="Skipped: Low Profit", notes=f"Profit: ¥{price_calc['actual_profit']}", last_checked=datetime.now())
                         db.merge(track)
                     else:
                         existing_prod = db.query(Product).filter_by(jan_code=jan).first()
-                        preserved_status = existing_prod.mercari_status if existing_prod else "Not Listed"
                         
-                        if info['stock_quantity'] == 0 and preserved_status == "Active":
-                            preserved_status = "Paused"
-                            st.toast(f"Auto-Paused {jan} (Out of Stock!)", icon="🚨")
+                        # 🚨 PATCHED: Operator Friction Fix (Auto-Route to Active)
+                        if not existing_prod:
+                            # Brand new item? If it has stock, make it Active instantly. 
+                            preserved_status = "Active" if info['stock_quantity'] > 0 else "Paused"
+                        else:
+                            # Existing item? Preserve the user's manual choice, but auto-pause if OOS.
+                            preserved_status = existing_prod.mercari_status
+                            if info['stock_quantity'] == 0 and preserved_status == "Active":
+                                preserved_status = "Paused"
+                                st.toast(f"Auto-Paused {jan} (Out of Stock!)", icon="🚨")
 
                         m_text = generate_mercari_text(
                             title=f"【特売】{info['title'][:25]} 新品",
@@ -497,6 +563,7 @@ with tab_bulk:
                             jan_code=info['jan_code'], title=info['title'], price=info['price'],
                             category=info['category'], features=info['features'], specs=info['specs'], 
                             mercari_text=m_text, image_folder=info['image_folder'], 
+                            weight_kg=info.get('weight_kg', 0.0),
                             mercari_price=price_calc['final_price'], expected_profit=price_calc['actual_profit'],
                             cainz_url=f"https://www.cainz.com/g/{info['jan_code']}.html",
                             shipping_tier=price_calc['shipping_tier'], shipping_fee=price_calc['shipping_fee'],
