@@ -1,0 +1,12 @@
+__pycache__/
+*.sqlite
+*.log
+.venv/
+venv/
+.env
+data/img/
+Bank Info.png
+target_image.jpg
+cainz.html
+out.txt
+output.txt

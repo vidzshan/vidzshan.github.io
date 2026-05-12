@@ -1,0 +1,25 @@
+{
+  "service": "Rakuraku Mercari Delivery",
+  "provider": "Yamato Transport",
+  "rates": [
+    {"name": "Nekoposu", "max_length": 31.2, "max_width": 22.8, "max_thickness": 3.0, "max_weight": 1, "cost": 210},
+    {"name": "Takkyubin Compact", "dedicated_box": true, "cost": 450, "box_cost": 70},
+    {"name": "Takkyubin 60", "max_sum": 60, "max_weight": 2, "cost": 750},
+    {"name": "Takkyubin 80", "max_sum": 80, "max_weight": 5, "cost": 870},
+    {"name": "Takkyubin 100", "max_sum": 100, "max_weight": 10, "cost": 1050},
+    {"name": "Takkyubin 120", "max_sum": 120, "max_weight": 15, "cost": 1200},
+    {"name": "Takkyubin 140", "max_sum": 140, "max_weight": 20, "cost": 1450},
+    {"name": "Takkyubin 160", "max_sum": 160, "max_weight": 25, "cost": 1700},
+    {"name": "Takkyubin 180", "max_sum": 180, "max_weight": 30, "cost": 2100},
+    {"name": "Takkyubin 200", "max_sum": 200, "max_weight": 30, "cost": 2500}
+  ],
+  "drop_off": [
+    {"name": "Seven-Eleven", "max_size": 200, "extra_fee": 0},
+    {"name": "FamilyMart", "max_size": 200, "extra_fee": 0},
+    {"name": "Yamato Sales Office", "max_size": 200, "extra_fee": 0},
+    {"name": "Collection", "max_size": 200, "extra_fee": 100},
+    {"name": "PUDO", "max_size": 100, "extra_fee": 0},
+    {"name": "Smaribox", "max_size": 100, "extra_fee": 0},
+    {"name": "House Small Collection", "max_size": 120, "extra_fee": 100}
+  ]
+}
