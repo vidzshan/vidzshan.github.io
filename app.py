@@ -484,12 +484,21 @@ with tab_bulk:
             jan_list_to_process = re.findall(r"\d{13}", raw_jans)
 
     with col_b:
-        st.markdown("**Option 2: Auto-Harvest from Cainz URL**")
-        cainz_url = st.text_input("Enter Cainz Category/Search URL")
+        st.markdown("**Option 2: Multi-Page Auto-Harvest**")
+        cainz_url = st.text_input("Enter Cainz Category URL")
+        
+        # 🚨 NEW: Pagination Control Slider
+        scrape_depth = st.slider("Scrape Depth (Pages)", min_value=1, max_value=10, value=2, 
+                                 help="1 page = ~40 items. Do not exceed 10 pages to avoid IP bans.")
+        
         if st.button("Harvest URL & Process", type="primary"):
-            with st.spinner("Scraping URL for JAN codes..."):
-                jan_list_to_process = harvest_jan_codes(cainz_url, "Auto-Harvest")
-                st.success(f"Harvested {len(jan_list_to_process)} JANs!")
+            if not cainz_url:
+                st.error("Please enter a valid URL.")
+            else:
+                with st.spinner(f"Navigating through {scrape_depth} pages... This may take a minute."):
+                    # 🚨 Pass the new slider variable into the harvester
+                    jan_list_to_process = harvest_jan_codes(cainz_url, "Auto-Harvest", max_pages=scrape_depth)
+                    st.success(f"Successfully Harvested {len(jan_list_to_process)} unique JANs from {scrape_depth} pages!")
 
 # --- 🚨 10X BATCH PROCESSING ENGINE (MULTI-THREADED) ---
     if jan_list_to_process:
@@ -543,8 +552,8 @@ with tab_bulk:
                         
                         # 🚨 PATCHED: Operator Friction Fix (Auto-Route to Active)
                         if not existing_prod:
-                            # Brand new item? If it has stock, make it Active instantly. 
-                            preserved_status = "Active" if info['stock_quantity'] > 0 else "Paused"
+                            # Brand new item? Default to Not Listed for review.
+                            preserved_status = "Not Listed"
                         else:
                             # Existing item? Preserve the user's manual choice, but auto-pause if OOS.
                             preserved_status = existing_prod.mercari_status
@@ -629,20 +638,23 @@ with tab_bundles:
                     title,
                 ).strip()
             
-            # Safely extract first meaningful line of features
+            # Safely extract multiple meaningful lines of features
             def get_clean_feature(text):
                 if not text:
-                    return "アウトドアや日々の作業を快適にサポートします。"
+                    return ["アウトドアや日々の作業を快適にサポートします。"]
                 text = re.sub(r"✅ 【.*?】", "", text)
                 lines = re.split(r"●|■|・|\n", text)
+                good_lines = []
                 for line in lines:
                     clean_line = line.strip()
                     if len(clean_line) > 8 and not re.search(
                         r"注意|本来|禁止|危険|保管|しないで|ください|下さい|必ず",
                         clean_line,
                     ):
-                        return clean_line[:35] + "…" if len(clean_line) > 35 else clean_line
-                return "アウトドアや日々の作業を快適にサポートします。"
+                        good_lines.append(clean_line[:35] + "…" if len(clean_line) > 35 else clean_line)
+                        if len(good_lines) >= 3:
+                            break
+                return good_lines if good_lines else ["アウトドアや日々の作業を快適にサポートします。"]
 
             # 🚨 2. YAMATO HARD-CAP CRASH FIX
             bundle_dim = max([item.shipping_tier for item in selected_items]) + (15 * (num_items - 1))
@@ -651,6 +663,10 @@ with tab_bundles:
             
             # 🚨 3. STREAMLIT MULTI-SELECT LAG FIX
             if st.button("Calculate Custom Bundle & Generate Image", type="primary"):
+                st.session_state.bundle_active_jans = selected_jans
+                st.session_state.bundle_active_title = custom_title
+                
+            if getattr(st.session_state, 'bundle_active_jans', None) == selected_jans:
                 if bundle_dim <= 60:
                     combined_shipping = 750
                 elif bundle_dim <= 80:
@@ -828,8 +844,11 @@ with tab_bundles:
                     for i, item in enumerate(selected_items):
                         clean_title = strip_brands(item.title)
                         safe_text = f"{item.features or ''} {item.specs or ''}"
-                        feat = get_clean_feature(safe_text)
-                        items_text += f"{(i+1)} {clean_title}\n・{feat}\n\n"
+                        feats = get_clean_feature(safe_text)
+                        if isinstance(feats, str):
+                            feats = [feats]
+                        feats_str = "\n".join([f"・{f}" for f in feats])
+                        items_text += f"{(i+1)} {clean_title}\n{feats_str}\n\n"
 
                     bundle_text = f"""{safe_title}
 
@@ -854,6 +873,44 @@ with tab_bundles:
 水濡れ・衝撃対策を徹底し、安全な「らくらくメルカリ便（匿名配送）」にて丁寧におまとめして発送いたします。
 """
                     st.code(bundle_text, language="markdown")
+
+                    st.markdown("---")
+                    if st.button("💾 Save Bundle to Active Pipeline", type="primary"):
+                        from datetime import datetime
+                        import shutil
+                        
+                        bundle_jan = f"BNDL_{datetime.now().strftime('%m%d%H%M%S')}"
+                        new_bundle = Product(
+                            jan_code=bundle_jan,
+                            title=safe_title,
+                            price=combined_source,
+                            category="Bundle",
+                            features=items_text,
+                            specs=bundle_key_suffix,
+                            mercari_text=bundle_text,
+                            image_folder="",
+                            weight_kg=0.0,
+                            mercari_price=bundle_final_price,
+                            expected_profit=bundle_actual_profit,
+                            shipping_tier=bundle_dim,
+                            shipping_fee=combined_shipping,
+                            mercari_status="Active"
+                        )
+                        
+                        bndl_img_folder = os.path.join(os.path.dirname(__file__), "data", "img", bundle_jan)
+                        os.makedirs(bndl_img_folder, exist_ok=True)
+                        
+                        try:
+                            shutil.copy(save_path, os.path.join(bndl_img_folder, f"{bundle_jan}_0.jpg"))
+                            new_bundle.image_folder = bndl_img_folder
+                            db.merge(new_bundle)
+                            db.commit()
+                            
+                            del st.session_state['bundle_active_jans']
+                            st.success(f"✅ Bundle {bundle_jan} successfully saved to Pipeline!")
+                            st.balloons()
+                        except Exception as e:
+                            st.error(f"Failed to save bundle: {e}")
 
 # ==========================================
 # TAB 4: VISUAL COMMAND CENTER
